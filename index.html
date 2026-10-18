@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USGS Elevation Cross-Section Extractor (OpenLayers)</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- OpenLayers CSS & JS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v8.2.0/ol.css">
+  <script src="https://cdn.jsdelivr.net/npm/ol@v8.2.0/dist/ol.js"></script>
+
+  <!-- Turf.js for spatial calculations -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <!-- Chart.js for elevation profile -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- FontAwesome for Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+  <!-- Google Fonts: Inter -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    #map { height: 100vh; width: 100vw; z-index: 1; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    
+    /* OpenLayers Custom Overlay Tooltip */
+    .ol-popup-tooltip {
+      position: absolute;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid rgba(56, 189, 248, 0.6);
+      color: #f8fafc;
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      white-space: nowrap;
+      pointer-events: none;
+      transform: translate(-50%, -120%);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+      transition: all 0.1s ease-out;
+    }
+    .ol-popup-tooltip::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-left: -5px;
+      border-width: 5px;
+      border-style: solid;
+      border-color: rgba(56, 189, 248, 0.6) transparent transparent transparent;
+    }
+    .ol-attribution { background: rgba(15, 23, 42, 0.8) !important; color: #94a3b8 !important; font-size: 10px; }
+    .ol-attribution a { color: #38bdf8 !important; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 antialiased overflow-hidden">
+
+  <!-- Main Map Container -->
+  <div id="map"></div>
+
+  <!-- Map Tooltip Overlay Element -->
+  <div id="mapTooltip" class="ol-popup-tooltip hidden"></div>
+
+  <!-- Top Center Header & Controls Overlay Bar -->
+  <div class="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] flex flex-col items-center gap-2 max-w-lg w-11/12 sm:w-auto pointer-events-none">
+    
+    <!-- Main Header Card -->
+    <header class="pointer-events-auto bg-slate-900/95 backdrop-blur-md text-white px-5 py-3 rounded-xl border border-slate-700/80 shadow-2xl flex items-center justify-between gap-4 w-full sm:w-auto">
+      <div class="flex items-center gap-3">
+        <div class="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
+          <i class="fa-solid fa-route text-base"></i>
+        </div>
+        <div>
+          <h1 class="font-bold text-sm tracking-tight text-white flex items-center gap-2">
+            Terrain Profiler
+            <span class="text-[10px] bg-blue-500/20 text-blue-300 font-medium px-2 py-0.5 rounded-full border border-blue-400/30">OpenLayers Sync</span>
+          </h1>
+          <p class="text-[11px] text-slate-400">USGS 3DEP Elevation Extractor</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- Control Toolbar / Instructions -->
+    <div class="pointer-events-auto bg-slate-800/95 backdrop-blur-md border border-slate-700/80 text-slate-200 text-xs px-4 py-2 rounded-lg shadow-xl flex items-center justify-between gap-4 w-full">
+      <div id="instructions" class="flex items-center gap-2">
+        <i class="fa-solid fa-circle-info text-blue-400 text-sm shrink-0"></i>
+        <span>Click to start drawing line. Double-click to finish.</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="drawBtn" onclick="startDrawing()" class="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-md transition-colors shadow flex items-center gap-1">
+          <i class="fa-solid fa-pen-nib"></i> Draw Line
+        </button>
+        <button id="clearBtn" onclick="clearMap()" class="hidden px-3 py-1 bg-rose-600/80 hover:bg-rose-600 text-white font-medium rounded-md transition-colors shadow flex items-center gap-1">
+          <i class="fa-solid fa-trash"></i> Clear Line
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Results Floating Card Panel -->
+  <div id="resultsCard" class="hidden absolute top-4 right-4 bottom-4 z-[1000] w-full max-w-lg bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-300">
+    
+    <!-- Card Header -->
+    <div class="p-4 bg-slate-800/80 border-b border-slate-700/80 flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <i class="fa-solid fa-chart-line text-emerald-400"></i>
+        <h2 class="font-semibold text-sm text-slate-100">Cross-Section Results</h2>
+      </div>
+      <div class="flex items-center gap-2">
+        <!-- Units Toggle -->
+        <div class="bg-slate-900 p-1 rounded-lg border border-slate-700 flex items-center text-xs">
+          <button id="unitFeetBtn" onclick="setUnits('Feet')" class="px-2.5 py-1 rounded-md font-medium transition-colors bg-blue-600 text-white">Feet</button>
+          <button id="unitMetersBtn" onclick="setUnits('Meters')" class="px-2.5 py-1 rounded-md font-medium text-slate-400 hover:text-slate-200 transition-colors">Meters</button>
+        </div>
+        <!-- Close Button -->
+        <button onclick="closeResultsCard()" class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div id="loadingState" class="hidden p-8 flex-1 flex flex-col items-center justify-center text-center">
+      <div class="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-4"></div>
+      <p class="font-semibold text-sm text-slate-200">Querying USGS 3DEP Elevation API...</p>
+      <p class="text-xs text-slate-400 mt-1">Fetching exactly 40 sampled stations along cross-section.</p>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="errorBanner" class="hidden p-3 mx-4 mt-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200 text-xs flex items-start gap-2.5">
+      <i class="fa-solid fa-triangle-exclamation text-amber-400 text-sm mt-0.5 shrink-0"></i>
+      <div class="flex-1">
+        <span class="font-semibold">Notice:</span> <span id="errorMessage">USGS service unavailable or CORS restricted. Fallback data loaded.</span>
+        <button onclick="retryFetch()" class="underline font-semibold ml-2 hover:text-white">Retry API</button>
+      </div>
+    </div>
+
+    <!-- Content Container -->
+    <div id="resultsContent" class="flex-1 flex flex-col overflow-y-auto custom-scrollbar p-4 gap-4">
+      
+      <!-- Summary Metrics Grid -->
+      <div class="grid grid-cols-3 gap-2.5">
+        <div class="bg-slate-800/60 border border-slate-700/60 p-3 rounded-xl">
+          <span class="text-[10px] uppercase font-bold tracking-wider text-slate-400 block mb-0.5">Total Length</span>
+          <span id="statLength" class="text-sm font-bold text-white">--</span>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-700/60 p-3 rounded-xl">
+          <span class="text-[10px] uppercase font-bold tracking-wider text-slate-400 block mb-0.5">Min Elev</span>
+          <span id="statMinElev" class="text-sm font-bold text-emerald-400">--</span>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-700/60 p-3 rounded-xl">
+          <span class="text-[10px] uppercase font-bold tracking-wider text-slate-400 block mb-0.5">Max Elev</span>
+          <span id="statMaxElev" class="text-sm font-bold text-blue-400">--</span>
+        </div>
+      </div>
+
+      <!-- Chart Container -->
+      <div class="bg-slate-800/60 border border-slate-700/60 p-3 rounded-xl">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-slate-300">Elevation Profile Chart</span>
+          <span class="text-[10px] text-slate-400">Hover / Click to Sync with Map</span>
+        </div>
+        <div class="h-48 w-full relative">
+          <canvas id="elevationChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Tab-Delimited Raw Output Section -->
+      <div class="bg-slate-800/60 border border-slate-700/60 p-3 rounded-xl flex flex-col flex-1 min-h-[180px]">
+        <div class="flex items-center justify-between mb-2">
+          <div>
+            <span class="text-xs font-semibold text-slate-300 block">Tab-Delimited Data</span>
+            <span class="text-[10px] text-slate-400">Distance &amp; Elevation (Ready for HEC-RAS / Excel)</span>
+          </div>
+          <button id="copyBtn" onclick="copyToClipboard()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-lg transition-colors shadow-lg flex items-center gap-1.5 active:scale-95">
+            <i class="fa-regular fa-copy"></i>
+            <span id="copyBtnText">Copy Data</span>
+          </button>
+        </div>
+
+        <div class="relative flex-1 bg-slate-950/80 border border-slate-800 rounded-lg p-3 overflow-hidden">
+          <pre id="rawDataOutput" class="text-xs font-mono text-emerald-400/90 h-full overflow-y-auto custom-scrollbar select-all whitespace-pre">0	0.00</pre>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Card Footer -->
+    <div class="p-3 bg-slate-800/80 border-t border-slate-700/80 text-[11px] text-slate-400 flex justify-between items-center">
+      <span>Source: USGS 3DEP Service</span>
+      <button onclick="downloadCSV()" class="hover:text-blue-400 transition-colors flex items-center gap-1">
+        <i class="fa-solid fa-file-csv"></i> Export CSV
+      </button>
+    </div>
+
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[2000] bg-emerald-600 text-white font-medium text-xs px-4 py-2.5 rounded-xl shadow-2xl transition-all duration-300 opacity-0 pointer-events-none flex items-center gap-2">
+    <i class="fa-solid fa-check-circle"></i>
+    <span id="toastMsg">Copied to clipboard!</span>
+  </div>
+
+  <script>
+    let map, vectorSource, vectorLayer, drawInteraction, tooltipOverlay;
+    let currentLineFeature = null;
+    let stationFeaturesMap = new Map(); // Index -> OpenLayers Point Feature
+    let sampledPointsData = [];
+    let currentUnits = 'Feet';
+    let chartInstance = null;
+    let isSyncing = false; // Flag to prevent infinite sync loops
+    let activeHighlightIndex = -1;
+
+    // Default & Highlight Styles for Map Stations
+    const defaultPointStyle = new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 4,
+        fill: new ol.style.Fill({ color: '#3b82f6' }),
+        stroke: new ol.style.Stroke({ color: '#ffffff', width: 1.5 })
+      })
+    });
+
+    const highlightPointStyle = new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 8,
+        fill: new ol.style.Fill({ color: '#38bdf8' }),
+        stroke: new ol.style.Stroke({ color: '#ffffff', width: 2.5 })
+      }),
+      zIndex: 10
+    });
+
+    const lineStyle = new ol.style.Style({
+      stroke: new ol.style.Stroke({
+        color: '#3b82f6',
+        width: 4
+      })
+    });
+
+    window.onload = function() {
+      initMap();
+      initChart();
+    };
+
+    function initMap() {
+      // USGS Topographic Tile Layer
+      const usgsTopoLayer = new ol.layer.Tile({
+        source: new ol.source.XYZ({
+          url: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}',
+          maxZoom: 22,
+          maxNativeZoom: 16,
+          attribution: 'Tiles courtesy of the U.S. Geological Survey'
+        })
+      });
+
+      // Vector source and layer for drawn lines and station points
+      vectorSource = new ol.source.Vector();
+      vectorLayer = new ol.layer.Vector({
+        source: vectorSource,
+        style: function(feature) {
+          if (feature.get('type') === 'station') {
+            return feature.get('highlighted') ? highlightPointStyle : defaultPointStyle;
+          }
+          return lineStyle;
+        }
+      });
+
+      // Tooltip Overlay for Map Station Hover
+      const tooltipEl = document.getElementById('mapTooltip');
+      tooltipOverlay = new ol.Overlay({
+        element: tooltipEl,
+        offset: [0, 0],
+        positioning: 'bottom-center'
+      });
+
+      // Initialize OpenLayers Map centered on Huntington, WV (-82.4452, 38.4192 in Web Mercator)
+      map = new ol.Map({
+        target: 'map',
+        layers: [usgsTopoLayer, vectorLayer],
+        overlays: [tooltipOverlay],
+        view: new ol.View({
+          center: ol.proj.fromLonLat([-82.4452, 38.4192]),
+          zoom: 14,
+          maxZoom: 22
+        })
+      });
+
+      // MAP BI-DIRECTIONAL EVENT LISTENERS
+      map.on('pointermove', function(e) {
+        if (e.dragging || isSyncing) return;
+        handleMapPointerEvent(e, false);
+      });
+
+      map.on('singleclick', function(e) {
+        if (isSyncing) return;
+        handleMapPointerEvent(e, true);
+      });
+    }
+
+    // Handles Map Pointer/Hover Events and triggers Chart Highlight Sync
+    function handleMapPointerEvent(e, isClick) {
+      let foundStation = null;
+
+      map.forEachFeatureAtPixel(e.pixel, function(feature) {
+        if (feature.get('type') === 'station') {
+          foundStation = feature;
+          return true;
+        }
+      }, { hitTolerance: 6 });
+
+      if (foundStation) {
+        const index = foundStation.get('stationIndex');
+        highlightStationByIndex(index, true); // Sync to Chart
+      } else if (!isClick && activeHighlightIndex !== -1) {
+        clearStationHighlight(true); // Clear Sync
+      }
+    }
+
+    // Activate OpenLayers Native Draw Interaction
+    function startDrawing() {
+      clearMap();
+      
+      document.getElementById('instructions').querySelector('span').textContent = "Click map to draw line. Double-click to finish.";
+      document.getElementById('drawBtn').classList.add('hidden');
+
+      drawInteraction = new ol.interaction.Draw({
+        source: vectorSource,
+        type: 'LineString',
+        style: new ol.style.Style({
+          stroke: new ol.style.Stroke({ color: '#38bdf8', width: 4, lineDash: [6, 6] })
+        })
+      });
+
+      map.addInteraction(drawInteraction);
+
+      // Clean completion: remove draw interaction immediately upon completion to avoid rubber-banding
+      drawInteraction.on('drawend', function(event) {
+        currentLineFeature = event.feature;
+        currentLineFeature.set('type', 'line');
+        
+        // Remove interaction immediately
+        map.removeInteraction(drawInteraction);
+        
+        document.getElementById('drawBtn').classList.add('hidden');
+        document.getElementById('clearBtn').classList.remove('hidden');
+        document.getElementById('instructions').querySelector('span').textContent = "Cross-section extracted. Hover chart or map stations to sync.";
+
+        processDrawnGeometry(currentLineFeature);
+      });
+    }
+
+    // Process geometry with Turf.js and query USGS API
+    async function processDrawnGeometry(feature) {
+      showLoading(true);
+      document.getElementById('errorBanner').classList.add('hidden');
+
+      const geometry = feature.getGeometry();
+      const coords3857 = geometry.getCoordinates();
+      const coords4326 = coords3857.map(coord => ol.proj.toLonLat(coord));
+
+      const lineGeoJSON = turf.lineString(coords4326);
+      const totalLengthMeters = turf.length(lineGeoJSON, { units: 'meters' });
+      const totalLengthFeet = totalLengthMeters * 3.28084;
+
+      // Generate exactly 40 stations
+      const points = [];
+      const numPoints = 40;
+      const stepDistanceMeters = numPoints > 1 ? (totalLengthMeters / (numPoints - 1)) : 0;
+
+      for (let i = 0; i < numPoints; i++) {
+        const distAlong = stepDistanceMeters * i;
+        const sampledPoint = turf.along(lineGeoJSON, distAlong, { units: 'meters' });
+        const [lng, lat] = sampledPoint.geometry.coordinates;
+        
+        points.push({
+          index: i,
+          lat: lat,
+          lng: lng,
+          distMeters: distAlong,
+          distFeet: distAlong * 3.28084
+        });
+      }
+
+      try {
+        const elevations = await fetchUSGSElevations(points, currentUnits);
+        
+        sampledPointsData = points.map((pt, idx) => ({
+          ...pt,
+          elevation: elevations[idx]
+        }));
+
+        addStationPointsToMap();
+        renderResults(totalLengthMeters, totalLengthFeet);
+      } catch (err) {
+        console.warn("USGS API call failed. Loading fallback elevations.", err);
+        showError("USGS API request throttled or CORS blocked. Generated fallback elevation profile.");
+        
+        const fallbackElevations = generateFallbackElevations(points);
+        sampledPointsData = points.map((pt, idx) => ({
+          ...pt,
+          elevation: fallbackElevations[idx]
+        }));
+
+        addStationPointsToMap();
+        renderResults(totalLengthMeters, totalLengthFeet);
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    // Render 40 station point features on OpenLayers map
+    function addStationPointsToMap() {
+      stationFeaturesMap.clear();
+
+      sampledPointsData.forEach(pt => {
+        const coords3857 = ol.proj.fromLonLat([pt.lng, pt.lat]);
+        const pointFeature = new ol.Feature({
+          geometry: new ol.geom.Point(coords3857),
+          stationIndex: pt.index,
+          type: 'station',
+          highlighted: false
+        });
+
+        stationFeaturesMap.set(pt.index, pointFeature);
+        vectorSource.addFeature(pointFeature);
+      });
+    }
+
+    // BI-DIRECTIONAL SYNC HIGHLIGHT FUNCTIONS
+    function highlightStationByIndex(index, syncToChart = true) {
+      if (index === activeHighlightIndex) return; // Prevent duplicate work
+      clearStationHighlight(false); // Reset current highlight without resetting Chart loop
+
+      activeHighlightIndex = index;
+      const stationFeature = stationFeaturesMap.get(index);
+      const dataPoint = sampledPointsData[index];
+
+      if (stationFeature && dataPoint) {
+        // 1. Highlight OpenLayers Point
+        stationFeature.set('highlighted', true);
+        stationFeature.changed();
+
+        // 2. Show Map Tooltip Overlay
+        const coords = stationFeature.getGeometry().getCoordinates();
+        const tooltipEl = document.getElementById('mapTooltip');
+        const isFeet = currentUnits === 'Feet';
+        const distVal = isFeet ? dataPoint.distFeet : dataPoint.distMeters;
+        const unitLbl = isFeet ? 'ft' : 'm';
+
+        tooltipEl.innerHTML = `<strong>Station ${index + 1}/40</strong><br>Dist: ${distVal.toFixed(1)} ${unitLbl}<br>Elev: ${dataPoint.elevation.toFixed(2)} ${unitLbl}`;
+        tooltipEl.classList.remove('hidden');
+        tooltipOverlay.setPosition(coords);
+
+        // 3. Sync Chart (if triggered from Map)
+        if (syncToChart && chartInstance && !isSyncing) {
+          isSyncing = true;
+          chartInstance.setActiveElements([{ datasetIndex: 0, index: index }]);
+          chartInstance.tooltip.setActiveElements([{ datasetIndex: 0, index: index }], { x: 0, y: 0 });
+          chartInstance.update();
+          isSyncing = false;
+        }
+      }
+    }
+
+    function clearStationHighlight(syncToChart = true) {
+      if (activeHighlightIndex !== -1) {
+        const stationFeature = stationFeaturesMap.get(activeHighlightIndex);
+        if (stationFeature) {
+          stationFeature.set('highlighted', false);
+          stationFeature.changed();
+        }
+        activeHighlightIndex = -1;
+
+        // Hide Map Tooltip
+        const tooltipEl = document.getElementById('mapTooltip');
+        tooltipEl.classList.add('hidden');
+        tooltipOverlay.setPosition(undefined);
+
+        // Clear Chart (if triggered from Map)
+        if (syncToChart && chartInstance && !isSyncing) {
+          isSyncing = true;
+          chartInstance.setActiveElements([]);
+          chartInstance.tooltip.setActiveElements([], { x: 0, y: 0 });
+          chartInstance.update();
+          isSyncing = false;
+        }
+      }
+    }
+
+    async function fetchUSGSElevations(points, units) {
+      const promises = points.map(pt => {
+        const url = `https://epqs.nationalmap.gov/v1/json?x=${pt.lng}&y=${pt.lat}&units=${units}&output=json`;
+        return fetch(url, { method: 'GET', mode: 'cors' })
+          .then(res => {
+            if (!res.ok) throw new Error("HTTP Status " + res.status);
+            return res.json();
+          })
+          .then(data => {
+            if (data && data.value !== undefined && data.value !== null && !isNaN(parseFloat(data.value))) {
+              return parseFloat(data.value);
+            }
+            throw new Error("Invalid value from USGS");
+          });
+      });
+
+      return await Promise.all(promises);
+    }
+
+    function generateFallbackElevations(points) {
+      const baseElev = 5280 + Math.random() * 200;
+      return points.map((pt, i) => {
+        const val = baseElev + 
+          (Math.sin(i / 3) * 45) + 
+          (Math.cos(i / 1.5) * 20) - 
+          (Math.pow(i - 20, 2) * 0.15);
+        return parseFloat(val.toFixed(2));
+      });
+    }
+
+    function renderResults(lengthMeters, lengthFeet) {
+      const resultsCard = document.getElementById('resultsCard');
+      resultsCard.classList.remove('hidden');
+
+      const isFeet = currentUnits === 'Feet';
+      const displayLength = isFeet ? `${lengthFeet.toFixed(1)} ft` : `${lengthMeters.toFixed(1)} m`;
+
+      const elevations = sampledPointsData.map(p => p.elevation);
+      const minElev = Math.min(...elevations);
+      const maxElev = Math.max(...elevations);
+
+      document.getElementById('statLength').textContent = displayLength;
+      document.getElementById('statMinElev').textContent = `${minElev.toFixed(2)} ${isFeet ? 'ft' : 'm'}`;
+      document.getElementById('statMaxElev').textContent = `${maxElev.toFixed(2)} ${isFeet ? 'ft' : 'm'}`;
+
+      let rawText = "";
+      sampledPointsData.forEach(pt => {
+        const dist = isFeet ? pt.distFeet : pt.distMeters;
+        rawText += `${dist.toFixed(2)}\t${pt.elevation.toFixed(2)}\n`;
+      });
+      document.getElementById('rawDataOutput').textContent = rawText.trim();
+
+      updateChart();
+    }
+
+    function initChart() {
+      const ctx = document.getElementById('elevationChart').getContext('2d');
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'Elevation',
+            data: [],
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59, 130, 246, 0.15)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+            pointHoverRadius: 8,
+            pointBackgroundColor: '#3b82f6',
+            pointHoverBackgroundColor: '#38bdf8',
+            pointHoverBorderColor: '#ffffff',
+            pointHoverBorderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          onHover: (event, activeElements) => {
+            if (isSyncing) return;
+            if (activeElements && activeElements.length > 0) {
+              const idx = activeElements[0].index;
+              highlightStationByIndex(idx, false); // Highlight map, don't re-trigger chart loop
+            } else {
+              clearStationHighlight(false);
+            }
+          },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  const pt = sampledPointsData[context[0].dataIndex];
+                  if (!pt) return '';
+                  const dist = currentUnits === 'Feet' ? pt.distFeet : pt.distMeters;
+                  return `Station ${pt.index + 1}/40: ${dist.toFixed(1)} ${currentUnits === 'Feet' ? 'ft' : 'm'}`;
+                },
+                label: function(context) {
+                  return `Elevation: ${context.parsed.y.toFixed(2)} ${currentUnits === 'Feet' ? 'ft' : 'm'}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              title: { display: true, text: `Distance (${currentUnits === 'Feet' ? 'ft' : 'm'})`, color: '#94a3b8', font: { size: 10 } },
+              ticks: { color: '#64748b', font: { size: 9 }, maxTicksLimit: 8 },
+              grid: { color: 'rgba(51, 65, 85, 0.4)' }
+            },
+            y: {
+              title: { display: true, text: `Elevation (${currentUnits === 'Feet' ? 'ft' : 'm'})`, color: '#94a3b8', font: { size: 10 } },
+              ticks: { color: '#64748b', font: { size: 9 } },
+              grid: { color: 'rgba(51, 65, 85, 0.4)' }
+            }
+          }
+        }
+      });
+    }
+
+    function updateChart() {
+      if (!chartInstance) return;
+      const isFeet = currentUnits === 'Feet';
+      const labels = sampledPointsData.map(pt => (isFeet ? pt.distFeet : pt.distMeters).toFixed(1));
+      const elevations = sampledPointsData.map(pt => pt.elevation);
+
+      chartInstance.data.labels = labels;
+      chartInstance.data.datasets[0].data = elevations;
+      chartInstance.options.scales.x.title.text = `Distance (${isFeet ? 'ft' : 'm'})`;
+      chartInstance.options.scales.y.title.text = `Elevation (${isFeet ? 'ft' : 'm'})`;
+      chartInstance.update();
+    }
+
+    function clearMap() {
+      if (drawInteraction) {
+        map.removeInteraction(drawInteraction);
+      }
+      clearStationHighlight(false);
+      vectorSource.clear();
+      stationFeaturesMap.clear();
+      currentLineFeature = null;
+      sampledPointsData = [];
+      closeResultsCard();
+
+      document.getElementById('drawBtn').classList.remove('hidden');
+      document.getElementById('clearBtn').classList.add('hidden');
+      document.getElementById('instructions').querySelector('span').textContent = "Click 'Draw Line' to start cross-section.";
+    }
+
+    function copyToClipboard() {
+      const text = document.getElementById('rawDataOutput').textContent;
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "fixed";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        showToast("Copied to clipboard!");
+        const btnText = document.getElementById('copyBtnText');
+        btnText.textContent = "Copied!";
+        setTimeout(() => { btnText.textContent = "Copy Data"; }, 2000);
+      } catch (err) {
+        showToast("Failed to copy text.");
+      }
+      document.body.removeChild(textArea);
+    }
+
+    function downloadCSV() {
+      if (sampledPointsData.length === 0) return;
+      const isFeet = currentUnits === 'Feet';
+      let csvContent = `data:text/csv;charset=utf-8,Station_${isFeet ? 'ft' : 'm'},Elevation_${isFeet ? 'ft' : 'm'},Latitude,Longitude\n`;
+      sampledPointsData.forEach(pt => {
+        const dist = isFeet ? pt.distFeet : pt.distMeters;
+        csvContent += `${dist.toFixed(2)},${pt.elevation.toFixed(2)},${pt.lat},${pt.lng}\n`;
+      });
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `USGS_Cross_Section_${isFeet ? 'Feet' : 'Meters'}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function setUnits(units) {
+      if (currentUnits === units) return;
+      currentUnits = units;
+
+      document.getElementById('unitFeetBtn').className = units === 'Feet' ? "px-2.5 py-1 rounded-md font-medium transition-colors bg-blue-600 text-white" : "px-2.5 py-1 rounded-md font-medium text-slate-400 hover:text-slate-200 transition-colors";
+      document.getElementById('unitMetersBtn').className = units === 'Meters' ? "px-2.5 py-1 rounded-md font-medium transition-colors bg-blue-600 text-white" : "px-2.5 py-1 rounded-md font-medium text-slate-400 hover:text-slate-200 transition-colors";
+
+      if (currentLineFeature) {
+        processDrawnGeometry(currentLineFeature);
+      }
+    }
+
+    function showLoading(isLoading) {
+      const loader = document.getElementById('loadingState');
+      const content = document.getElementById('resultsContent');
+      if (isLoading) {
+        document.getElementById('resultsCard').classList.remove('hidden');
+        loader.classList.remove('hidden');
+        content.classList.add('hidden');
+      } else {
+        loader.classList.add('hidden');
+        content.classList.remove('hidden');
+      }
+    }
+
+    function showError(msg) {
+      const banner = document.getElementById('errorBanner');
+      document.getElementById('errorMessage').textContent = msg;
+      banner.classList.remove('hidden');
+    }
+
+    function retryFetch() {
+      if (currentLineFeature) processDrawnGeometry(currentLineFeature);
+    }
+
+    function closeResultsCard() {
+      document.getElementById('resultsCard').classList.add('hidden');
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').textContent = msg;
+      toast.classList.remove('opacity-0', 'pointer-events-none');
+      setTimeout(() => { toast.classList.add('opacity-0', 'pointer-events-none'); }, 2500);
+    }
+  </script>
+</body>
+</html>
